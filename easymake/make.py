@@ -58,7 +58,7 @@ class Makefile:
         return kwargs
 
     def _parse_flags(self):
-        flags = [a[1] for a in self.args if re.findall(r'^-\w$', a)]
+        flags = [f for a in self.args if re.findall(r'^-\w+$', a) for f in a[1:]]
         return flags
 
     def _parse_functions(self, locals: dict):
@@ -83,6 +83,3 @@ class Makefile:
 def make(locals):
     makefile = Makefile(locals)
     makefile.run()
-
-
-
