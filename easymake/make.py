@@ -36,7 +36,7 @@ class Makefile:
         All keyword arguments specified with `kwarg=value` are passed
         to those functions which require that kwarg.
         Any additional arguments will be passed to Makefile functions
-        which accept `*args` and `**kwargs` as input arguments.
+        which accept ``*args`` and ``**kwargs`` as input arguments.
 
         """
         for function in self.functions:
@@ -97,7 +97,7 @@ class Makefile:
         """
         kwarg_regex = r'^[\w_][\w\d_]*=.+$'
         kwargs = [a.split('=') for a in self.args if re.findall(kwarg_regex, a)]
-        kwargs = {item[0]: json.loads(item[1]) for item in kwargs}
+        kwargs = {k: (v if isinstance(v, str) else json.loads(v)) for k, v in kwargs}
         args = [a for a in self.args if not re.findall(kwarg_regex, a)]
         self.kwargs = kwargs
         self.args = args
