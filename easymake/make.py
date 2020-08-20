@@ -40,16 +40,21 @@ class Makefile:
 
         """
         for function in self.functions:
-            # Function arguments
+            # Assign a value to all of the function's arguments
             argspec = inspect.getargspec(function)
-            function_args = argspec.args
-            kwargs = {k: v for (k, v) in self.kwargs.items() if k in function_args}
-            flags = {f: True for f in self.flags if f in function_args}
+            args = []
+            for arg, default in zip(argspec.args, argspec.defaults):
+                if self.kwargs.get(arg):
+                    args.append(self.kwargs[arg])
+                elif self.flags.get(arg):
+                    args.append(self.flags[arg])
+                else:
+                    args.append(default)
             # Extra arguments
             extra_args = self.args if argspec.varargs else []
             extra_kwargs = self.kwargs if argspec.keywords else {}
             # Run
-            function(*extra_args, **kwargs, **flags, **extra_kwargs)
+            function(*args, *extra_args, **extra_kwargs)
 
     def _parse_args(self):
         """
@@ -80,8 +85,8 @@ class Makefile:
                     functions.append(functions_dict[self.args.pop(0)])
                 else:
                     if not functions:
-                        msg = f'ezmake command args: {self.args} did not match' + \
-                            ' any functions defined in Makefile.py: %s' % \
+                        msg = f'ezmake command args: {self.args} did not' +    \
+                            'match any functions defined in Makefile.py: %s' % \
                             list(functions_dict.keys())
                         raise ValueError(msg)
                     break
@@ -97,14 +102,16 @@ class Makefile:
         """
         kwarg_regex = r'^[\w_][\w\d_]*=.+$'
         kwargs = [a.split('=') for a in self.args if re.findall(kwarg_regex, a)]
-        kwargs = {k: (v if isinstance(v, str) else json.loads(v)) for k, v in kwargs}
-        args = [a for a in self.args if not re.findall(kwarg_regex, a)]
-        self.kwargs = kwargs
-        self.args = args
+        self.kwargs = {
+            k: (v if isinstance(v, str) else json.loads(v))
+            for k, v in kwargs
+        }
+        self.args = [a for a in self.args if not re.findall(kwarg_regex, a)]
 
     def _parse_flags(self):
-        flags = [f for a in self.args if re.findall(r'^-\w+$', a) for f in a[1:]]
-        self.flags = flags
+        self.flags = {f: True for a in self.args if re.findall(r'^-\w+$', a)
+                              for f in a[1:]}
+        self.args = [a for a in self.args if not self.flags.get(a[1:])]
 
 
 def make(locals):

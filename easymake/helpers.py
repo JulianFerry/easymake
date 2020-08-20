@@ -2,6 +2,7 @@ import os
 import re
 import json
 import demjson
+from pathlib import Path
 
 import sys
 import shlex
@@ -112,12 +113,12 @@ class Globals(dict):
         # go up the path to find the parent directories
         cwd = os.path.join(os.getcwd(), 'Makefile.py')
         globs = Globals({
-            'Makefile_path': os.path.abspath(cwd),
+            'Makefile_path': Path(os.path.abspath(cwd)),
             'Makefile_name': os.path.basename(cwd)
         })
         for d in dirs[-2::-1]:
             cwd = os.path.dirname(cwd)
-            globs[f'{d}_path'] = os.path.abspath(cwd)
+            globs[f'{d}_path'] = Path(os.path.abspath(cwd))
             globs[f'{d}_name'] = os.path.basename(cwd)
         return globs
 
@@ -139,37 +140,39 @@ class Globals(dict):
 
     def _replace_variables(
         self,
-        command_str: str
+        string: str
     ):
         """
-        Replace $variables with their Globals value.
+        Replace $key variables with their corresponding value.
 
-        Defaults to environment variables if no corresponding key is
-        found.
+        Defaults to environment variables if no key is found.
 
         Parameters
         ----------
-        command_str: str
-            Command to replace $variables for.
+        string: str
+            String to replace variables for.
 
         """
+        # Input handling
+        if not isinstance(string, str):
+            string = _to_string(string)
         # Find all $ or ${} variables in the string
         quotes = '(?:"|\')'
         alphanums_in_square_brackets = \
-            r'(?:'                                                   + \
-                r'(?:\[' + quotes + r'[\w_]+' + quotes + r'\])'      + \
-                r'|'                                                 + \
-                r'(?:\[\$[\w_]+\])'                                  + \
-                r'|'                                                 + \
-                r'(?:\[\d+\])'                                       + \
+            r'(?:'                                                  + \
+                r'(?:\[' + quotes + r'[\w_]+' + quotes + r'\])'     + \
+                r'|'                                                + \
+                r'(?:\[\$[\w_]+\])'                                 + \
+                r'|'                                                + \
+                r'(?:\[\d+\])'                                      + \
             r')*'
         pattern = \
-            r'('                                                     + \
+            r'('                                                    + \
                 r'\$[\w_]+' + alphanums_in_square_brackets          + \
-                r'|'                                                 + \
+                r'|'                                                + \
                 r'\${[\w_]+' + alphanums_in_square_brackets + '}'   + \
             r')'
-        parsed_variables = re.findall(pattern, command_str)
+        parsed_variables = re.findall(pattern, string)
         var_replacements = {k: k for k in parsed_variables}
         # Find a replacement for each parsed variable
         for var in parsed_variables:
@@ -185,10 +188,13 @@ class Globals(dict):
                     key = key.strip('${}')
                     subkey_value = self.get(key, os.environ.get(key))
                     if subkey_value is not None:
+                        # Recursively update any referenced variables
+                        subkey_value = self._replace_variables(subkey_value)
                         subkeys[i] = subkey_value
                     else:
                         warnings.warn(f'${key} {warning}', RuntimeWarning)
-            # If it's a collection (dict or list), iteratively get the element
+            # If it's a collection (dict or list), iterate over the subkeys
+            # to fetch the element by key / index
             try:
                 replacement = subkeys[0]
                 for k in subkeys[1:]:
@@ -199,11 +205,11 @@ class Globals(dict):
                 var_replacements[var] = replacement
             except (IndexError, KeyError):
                 pass
-        # Now replace all occurences of that variable in the parsed string
+        # Now replace all occurences of that $variable in the original string
         for var, replacement in var_replacements.items():
             replacement = _to_string(replacement)
-            command_str = command_str.replace(var, replacement)
-        return command_str
+            string = string.replace(var, replacement)
+        return string
 
 
 class Shell:
@@ -217,13 +223,17 @@ class Shell:
     ----------
     globals: Globals
         Global variables to use.
+    cwd: str
+        Default working directory to execute shell commands from
 
     """
     def __init__(
         self,
-        globals: Globals = None
+        globals: Globals = None,
+        cwd: str = None
     ):
         self.globals = globals
+        self.cwd = cwd
 
     def __call__(
         self,
@@ -249,7 +259,12 @@ class Shell:
             This will affect any relative paths in the command.
 
         """
-        self._execute(command, cwd, stdout=sys.stdout, stderr=subprocess.STDOUT)
+        self._execute(
+            command,
+            cwd,
+            stdout=sys.stdout,
+            stderr=subprocess.STDOUT
+        )
 
     def capture(
         self,
@@ -273,7 +288,12 @@ class Shell:
             Shell command stdout (errors will be raised).
 
         """
-        return self._execute(command, cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return self._execute(
+            command,
+            cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
 
     def _execute(
         self,
@@ -307,41 +327,57 @@ class Shell:
             Shell command output if stdout is ``subprocess.PIPE``.
 
         """
-        command_list = shlex.split(command)
-        if not cwd: cwd = os.getcwd()
-        if isinstance(self.globals, Globals):
-            command_list = [self.globals._replace_variables(c) for c in command_list]
-            cwd = self.globals._replace_variables(cwd)
-        command_list = [_to_string(c) for c in command_list]
-        p = subprocess.run(
-            command_list,
-            stdout=stdout,
-            stderr=stderr,
-            cwd=cwd,
-            universal_newlines=True
-        )
-        if p.returncode != 0:
-            print()
-            msg = '\nCommand `%s` failed with exit code %s' % \
-                (command_list, p.returncode)
-            stderr_msg = ':\n\n%s' % p.stderr if p.stderr else ''
-            raise RuntimeError(msg + stderr_msg)
-        elif p.stdout:
-            return p.stdout[:-1]
+        # Parse command
+        commands = command.split(';')
+        output = ''
+        for cmd in commands:
+            command_list = shlex.split(cmd)
+            if not cwd:
+                cwd = self.cwd if self.cwd else os.getcwd()
+            # Replace $variables with Globals values
+            if isinstance(self.globals, Globals):
+                command_list = [
+                    self.globals._replace_variables(c) for c in command_list]
+                cwd = self.globals._replace_variables(cwd)
+            command_list = [_to_string(c) for c in command_list]
+            # Run command and capture or stream the output
+            p = subprocess.run(
+                command_list,
+                stdout=stdout,
+                stderr=stderr,
+                cwd=cwd,
+                universal_newlines=True
+            )
+            if p.returncode != 0:
+                msg = '\nCommand `%s` failed with exit code %s' % \
+                    (command_list, p.returncode)
+                stderr_msg = ':\n\n%s' % p.stderr if p.stderr else ''
+                print(msg, stderr_msg)
+                quit()  # Quit is more readable than raising an error here
+            elif p.stdout:
+                output += p.stdout[:-1]
+        return output
 
 
-def _to_string(variable):
+def _to_string(var):
     """
     Convert single-quoted Python dicts and lists to double-quoted JSON
     Don't add quotes for other types such as int, float and str
 
+    Parameters
+    ----------
+    var: object
+        Any object that can be converted to a string representation
+
     """
-    try:
-        variable = demjson.decode(variable)
-    except demjson.JSONDecodeError:
-        pass
-    if isinstance(variable, (list, dict)):
-        variable = json.dumps(variable)
+    if isinstance(var, str) and len(var) > 2 and \
+            (var[0] != var[-1]) and var[0] not in ['"', "'"]:
+        try:
+            var = demjson.decode(var)
+        except (demjson.JSONDecodeError, AttributeError, TypeError):
+            pass
+    if isinstance(var, (list, dict)):
+        var = json.dumps(var)
     else:
-        variable = str(variable)
-    return variable
+        var = str(var)
+    return var
