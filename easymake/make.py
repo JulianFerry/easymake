@@ -7,77 +7,104 @@ import argparse
 class Makefile:
     """
     Parses a Makefile.py script via the same logic as a Makefile
-    
-    ##################################
+
     ##### UDPATE THIS DOCSTRING ######
     The main way to interact with this class is via the run() method
     Command-line arguments are parsed with argparse:
-        function names: this should be specified in the user's makefile
-        keyword arguments: these will be passed to the Makefile functions
+        - function names: this should be specified in the user's makefile
+        - keyword arguments: these will be passed to the Makefile functions
     ##### UDPATE THIS DOCSTRING ######
-    ##################################
 
     Parameters
     ----------
     locals: dict
-        Dictionary of local module variables, as returned by locals()
+        Dictionary of Makefile functions returned by locals()
 
     """
     def __init__(self, locals: dict):
-        """
-        """
-        self.args = self._parse_args()
-        self.kwargs = self._parse_kwargs()
-        self.flags = self._parse_flags()
-        self.functions = self._parse_functions(locals)
-        
+        self._parse_args()
+        self._parse_functions(locals)
+        self._parse_kwargs()
+        self._parse_flags()
+
     def run(self):
         """
-        Run all functions specified in the easymake command,
-        which have been defined in the user's Makefile.
+        Run Makefile.py functions specified in the ezmake command
+
+        Run all functions defined in the user's Makefile which were
+        passed as an argument to the ezmake command.
         All keyword arguments specified with `kwarg=value` are passed
-        to functions which require that kwarg.
+        to those functions which require that kwarg.
+        Any additional arguments will be passed to Makefile functions
+        which accept `*args` and `**kwargs` as input arguments.
+
         """
         for function in self.functions:
-            function_args = inspect.getargspec(function).args
+            # Function arguments
+            argspec = inspect.getargspec(function)
+            function_args = argspec.args
             kwargs = {k: v for (k, v) in self.kwargs.items() if k in function_args}
             flags = {f: True for f in self.flags if f in function_args}
-            function(**kwargs, **flags)
+            # Extra arguments
+            extra_args = self.args if argspec.varargs else []
+            extra_kwargs = self.kwargs if argspec.keywords else {}
+            # Run
+            function(*extra_args, **kwargs, **flags, **extra_kwargs)
 
     def _parse_args(self):
         """
-        Parse all command-line arguments 
+        Parse all command-line arguments
         """
         parser = argparse.ArgumentParser()
         _, args = parser.parse_known_args()
-        return args
-
-    def _parse_kwargs(self):
-        kwargs = [a.split('=') for a in self.args if re.findall(r'^[\w_]+=.+$', a)]
-        kwargs = {item[0]: json.loads(item[1]) for item in kwargs}
-        return kwargs
-
-    def _parse_flags(self):
-        flags = [f for a in self.args if re.findall(r'^-\w+$', a) for f in a[1:]]
-        return flags
+        self.args = args
 
     def _parse_functions(self, locals: dict):
         """
+        Find all functions defined in the user's Makefile which were
+        passed as an argument to the ezmake command.
+
+        Parameters
+        ----------
+        locals: dict
+            Dictionary of Makefile variables, as returned by locals()
+
         """
         functions_dict = dict(filter(self._isfunction, locals.items()))
         functions = []
-        for i in range(len(self.args)):
-            if functions_dict.get(self.args[0]):
-                functions.append(functions_dict[self.args.pop(0)])
-            else:
-                break
-        if not functions:
-            functions = [next(iter(functions_dict.values()))]
-        return functions
+        if not self.args:
+            functions.append(next(iter(functions_dict.values())))
+        else:
+            for i in range(len(self.args)):
+                if functions_dict.get(self.args[0]):
+                    functions.append(functions_dict[self.args.pop(0)])
+                else:
+                    if not functions:
+                        msg = f'ezmake command args: {self.args} did not match' + \
+                            ' any functions defined in Makefile.py: %s' % \
+                            list(functions_dict.keys())
+                        raise ValueError(msg)
+                    break
+        self.functions = functions
 
     def _isfunction(self, dict_item: tuple):
         k, v = dict_item
         return callable(v) and (v.__module__ == "__main__")
+
+    def _parse_kwargs(self):
+        """
+        Separate kwargs from args in the ezmake command-line arguments
+        """
+        kwarg_regex = r'^[\w_][\w\d_]*=.+$'
+        kwargs = [a.split('=') for a in self.args if re.findall(kwarg_regex, a)]
+        kwargs = {item[0]: json.loads(item[1]) for item in kwargs}
+        args = [a for a in self.args if not re.findall(kwarg_regex, a)]
+        self.kwargs = kwargs
+        self.args = args
+
+    def _parse_flags(self):
+        flags = [f for a in self.args if re.findall(r'^-\w+$', a) for f in a[1:]]
+        self.flags = flags
 
 
 def make(locals):

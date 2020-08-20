@@ -7,20 +7,63 @@ import sys
 import shlex
 import subprocess
 
-from typing import Union
 import warnings
 
 
-def formatwarning(msg, category, filename, lineno, line=None):
+def _formatwarning(msg, category, filename, lineno, line=None):
     """Replace filename with __name__ to avoid printing the warn() call"""
     msg = warnings.WarningMessage(msg, category, __name__, lineno, None, None)
     return warnings._formatwarnmsg_impl(msg)
-warnings.formatwarning = formatwarning
+warnings.formatwarning = _formatwarning  # noqa
 
 
 class Globals(dict):
     """
-    Globals is a supercharged Python dictionary which can reference values
+    Globals is a supercharged Python dictionary in which values can
+    reference other dictionary values by key, preceded by the ``$``
+    symbol and (optionally) surrounded by curly braces: ``'$key'``
+    or ``'${key}'``. If no corresponding dictionary key is found,
+    Globals will look for an environment variable whose name matches
+    that key.
+
+    When calling the ``.get``, ``__getitem__`` or ``__getattr__``
+    methods, if that item references another ``Globals`` key (or an
+    environment variable), the returned value will be updated with the
+    value corresponding to that key. If the key is not found, then no
+    replacement occurs.
+
+    Since ``Globals`` inherits from Python's dictionary class, passing
+    a ``Globals`` object as a function argument will pass a reference
+    to its position in memory. Therefore, any changes made to a
+    ``Globals`` object within the context of a function will also
+    change that object within the global context. This allows a
+    ``Globals`` object to be assigned to the ``Shell`` class before any
+    global values have been set in the *Makefile*. Any future changes
+    made to the global object will propagate to the ``Shell`` object.
+
+    Items can also be set and fetched using the ``.`` notation, as if
+    they were object attributes.
+
+    Examples
+    --------
+
+    >>> from easymake.helpers import Globals
+    >>> g = Globals({'a': 'Hello', 'b': 'world!'})
+    >>> print(g['a'])
+    'Hello'
+    >>> print(g.b)
+    'world!
+    >>> g.c = '$a ${b}'  # g.c references g.a and g.b by name
+    >>> print(g.c)
+    'Hello world!'
+    >>> g.d = 'Personal working directory: $PWD'  # environment variable
+    >>> print(g.d)
+    Personal working directory: /home/easymake
+    >>> g.e = '$other'
+    >>> print(g.e)
+    RuntimeWarning: $other not found in Globals or OS environment variables
+    '$other'
+
     """
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
@@ -28,7 +71,40 @@ class Globals(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def from_path(path='Makefile'):
+    def from_path(path: str = 'Makefile'):
+        """
+        Generate global values from a directory structure.
+
+        Using the Makefile.py file path as the starting point,
+        ``Globals.from_path`` will generate all names and absolute
+        paths for directories specified in the directory structure,
+        of the format: ``{'directory_name': name, 'directory_path': abspath}
+
+        The path must end with ``'Makefile'`` since all paths will be
+        determined relative to the Makefile's absolute path.
+
+        Parameters
+        ----------
+        path: str
+            Directory structure ending with ``'Makefile'``.
+
+        Examples
+        --------
+        >>> from easymake.helpers import Globals
+        >>> g = Globals.from_path('project/src/package/Makefile')
+        >>> print(g)
+        {
+            'project_path': '/home/myproject',
+            'project_name': 'myproject'
+            'src_path': '/home/myproject/src',
+            'src_name': 'src',
+            'package_path': '/home/myproject/src/easymake',
+            'package_name': 'easymake',
+            'Makefile_path': '/home/myproject/src/easymake/Makefile.py',
+            'Makefile_name': 'Makefile.py'
+        }
+
+        """
         if not path.endswith('Makefile'):
             raise ValueError('globs path should end with "Makefile"')
         dirs = path.split('/')
@@ -46,17 +122,17 @@ class Globals(dict):
         return globs
 
     def __getitem__(self, key):
-        """Replace $values when the key is fetched"""
+        """Get item, replacing references to $keys with their values."""
         value = super().__getitem__(key)
         if isinstance(value, str): value = self._replace_variables(value)
         return value
 
     def __getattr__(self, key):
-        """Fetch dict value using dict.key notation"""
+        """Fetch dict value using dict.key notation."""
         return self.__getitem__(key)
 
     def get(self, key, default=None):
-        """Replace $values when the key is fetched"""
+        """Calls dict.get, replacing references to $keys with their values."""
         value = super().get(key, default)
         if isinstance(value, str): value = self._replace_variables(value)
         return value
@@ -66,42 +142,44 @@ class Globals(dict):
         command_str: str
     ):
         """
-        Replace $variables with their value stored in self.globals
-        If no variable is found, defaults to environment variables.
+        Replace $variables with their Globals value.
+
+        Defaults to environment variables if no corresponding key is
+        found.
 
         Parameters
         ----------
         command_str: str
-            Command to replace $variables for
+            Command to replace $variables for.
 
         """
-        # Find all $ or ${} variables in the string 
+        # Find all $ or ${} variables in the string
         quotes = '(?:"|\')'
         alphanums_in_square_brackets = \
-            '(?:'                                                   + \
-                '(?:\[' + quotes + '[\w_]+' + quotes + '\])'        + \
-                '|'                                                 + \
-                '(?:\[\$[\w_]+\])'                                  + \
-                '|'                                                 + \
-                '(?:\[\d+\])'                                       + \
-            ')*'
+            r'(?:'                                                   + \
+                r'(?:\[' + quotes + r'[\w_]+' + quotes + r'\])'      + \
+                r'|'                                                 + \
+                r'(?:\[\$[\w_]+\])'                                  + \
+                r'|'                                                 + \
+                r'(?:\[\d+\])'                                       + \
+            r')*'
         pattern = \
-            '('                                                     + \
+            r'('                                                     + \
                 r'\$[\w_]+' + alphanums_in_square_brackets          + \
-                '|'                                                 + \
+                r'|'                                                 + \
                 r'\${[\w_]+' + alphanums_in_square_brackets + '}'   + \
-            ')'
+            r')'
         parsed_variables = re.findall(pattern, command_str)
         var_replacements = {k: k for k in parsed_variables}
         # Find a replacement for each parsed variable
         for var in parsed_variables:
             # Split var into subkeys if var is of the form $variable['subkey']
             # E.g. "$PATHS['mypath'][$arg']" -> ["$PATHS", "mypath", "$arg"]
-            regex = '\[' + '(?:\'|")*' + '(.*?)' + '(?:\'|")*' + '\]'  # ['.*']
+            regex = r'\[(?:\'|")?(.*?)(?:\'|")?\]'  # ['.*'] or [".*"]
             subkeys = re.findall(regex, var)
-            subkeys.insert(0, re.findall('^\${?[\w_]+}?', var)[0])
+            subkeys.insert(0, re.findall(r'^\${?[\w_]+}?', var)[0])  # ${key}
             # Replace any $variable subkeys with the associated value
-            warning = 'not found in shell globals or OS environment variables'
+            warning = 'not found in Globals or OS environment variables'
             for i, key in enumerate(subkeys):
                 if key.startswith('$'):
                     key = key.strip('${}')
@@ -119,7 +197,7 @@ class Globals(dict):
                     else:
                         replacement = replacement[k]
                 var_replacements[var] = replacement
-            except:
+            except (IndexError, KeyError):
                 pass
         # Now replace all occurences of that variable in the parsed string
         for var, replacement in var_replacements.items():
@@ -129,38 +207,104 @@ class Globals(dict):
 
 
 class Shell:
-    def __init__(self, globals: Union[Globals, dict]=None):
+    """
+    Instantiates a Shell class which can execute shell commands.
+
+    - Calling ``run()`` will run a shell command and stream the output
+    - Calling ``capture()`` will return the output of a shell command
+
+    Parameters
+    ----------
+    globals: Globals
+        Global variables to use.
+
+    """
+    def __init__(
+        self,
+        globals: Globals = None
+    ):
         self.globals = globals
-    
-    def __call__(self, command, cwd=None):
+
+    def __call__(
+        self,
+        command: str,
+        cwd=None
+    ):
         self.run(command, cwd)
 
-    def run(self, command, cwd=None):
-        self._execute(command, cwd, stdout=sys.stdout, stderr=subprocess.STDOUT)
-
-    def capture(self, command, cwd=None):
-        return self._execute(command, cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    def _execute(self, command, cwd, stdout, stderr):
+    def run(
+        self,
+        command: str,
+        cwd: str = None
+    ):
         """
-        Execute a shell command as a subprocess and return the output
+        Execute a shell command as a subprocess and print the output.
 
         Parameters
         ----------
         command: str
-            Shell command to execute as a string
+            Shell command to execute as a string.
         cwd: str
-            Directory from which to execute the command
-            This will affect any relative paths in the command
+            Directory from which to execute the command.
+            This will affect any relative paths in the command.
+
+        """
+        self._execute(command, cwd, stdout=sys.stdout, stderr=subprocess.STDOUT)
+
+    def capture(
+        self,
+        command: str,
+        cwd: str = None
+    ):
+        """
+        Execute a shell command as a subprocess and return the output.
+
+        Parameters
+        ----------
+        command: str
+            Shell command to execute as a string.
+        cwd: str
+            Directory from which to execute the command.
+            This will affect any relative paths in the command.
+
+        Returns
+        -------
+        stdout: str
+            Shell command stdout (errors will be raised).
+
+        """
+        return self._execute(command, cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def _execute(
+        self,
+        command: str,
+        cwd: str,
+        stdout: object,
+        stderr: object
+    ):
+        """
+        Execute a shell command as a subprocess and return the output.
+
+        Parameters
+        ----------
+        command: str
+            Shell command to execute as a string.
+        cwd: str
+            Directory from which to execute the command.
+            This will affect any relative paths in the command.
         stdout:
             IO handler for the command's stdout. Options are:
             - subprocess.PIPE to capture and return the whole output
             - sys.stdout to stream the command output to the console
+        stderr:
+            IO handler for the command's stderr. Options are:
+            - subprocess.PIPE to capture and return the whole output
+            - subprocess.STDOUT to stream errors to stdout
 
         Returns
         -------
         output: str
-            Shell command output if stdout is subprocess.PIPE
+            Shell command output if stdout is ``subprocess.PIPE``.
 
         """
         command_list = shlex.split(command)
@@ -185,14 +329,17 @@ class Shell:
         elif p.stdout:
             return p.stdout[:-1]
 
+
 def _to_string(variable):
     """
-    Convert single quoted Python dict strings to double quoted JSON
-    Don't add quotes for strings and ints
+    Convert single-quoted Python dicts and lists to double-quoted JSON
+    Don't add quotes for other types such as int, float and str
 
     """
-    try: variable = demjson.decode(variable)
-    except: pass
+    try:
+        variable = demjson.decode(variable)
+    except demjson.JSONDecodeError:
+        pass
     if isinstance(variable, (list, dict)):
         variable = json.dumps(variable)
     else:
