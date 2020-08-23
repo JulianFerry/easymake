@@ -6,7 +6,7 @@ import argparse
 
 class Makefile:
     """
-    Parses a Makefile.py script via the same logic as a Makefile
+    Parse a Makefile.py script with the same logic as a Makefile
 
     ##### UDPATE THIS DOCSTRING ######
     The main way to interact with this class is via the run() method
@@ -33,28 +33,47 @@ class Makefile:
 
         Run all functions defined in the user's Makefile which were
         passed as an argument to the ezmake command.
-        All keyword arguments specified with `kwarg=value` are passed
+        All keyword arguments specified with ``kwarg=value`` are passed
         to those functions which require that kwarg.
         Any additional arguments will be passed to Makefile functions
         which accept ``*args`` and ``**kwargs`` as input arguments.
 
         """
         for function in self.functions:
-            # Assign a value to all of the function's arguments
+            # Get all args and their defaults from the function definition
             argspec = inspect.getargspec(function)
-            args = []
-            for arg, default in zip(argspec.args, argspec.defaults):
-                if self.kwargs.get(arg):
-                    args.append(self.kwargs[arg])
+            defaults = list(argspec.defaults) if argspec.defaults else []
+            num_args = len(argspec.args)
+            num_defaults = len(defaults)
+            num_nodefaults = num_args - num_defaults
+            # Match the function's args with those passed in the ezmake command
+            args = {}
+            arg_error = False
+            for i, arg in enumerate(argspec.args):
+                if self.kwargs.get(arg) is not None:
+                    args[arg] = self.kwargs[arg]
                 elif self.flags.get(arg):
-                    args.append(self.flags[arg])
+                    args[arg] = self.flags[arg]
+                elif i >= num_nodefaults:
+                    args[arg] = defaults[i - num_nodefaults]
                 else:
-                    args.append(default)
-            # Extra arguments
-            extra_args = self.args if argspec.varargs else []
-            extra_kwargs = self.kwargs if argspec.keywords else {}
-            # Run
-            function(*args, *extra_args, **extra_kwargs)
+                    arg_error = True
+            # If args are missing, rather than rewrite the TypeError logic
+            # just call the function, knowing that it will raise a TypeError
+            if arg_error:
+                function(**args)
+            # Handle extra arguments
+            extra_args = []
+            extra_kwargs = {}
+            if argspec.varargs:
+                extra_args = [a for a in self.args if a not in argspec.args]
+                for f, _ in self.flags.items():
+                    extra_args.append(f'-{f}')
+            if argspec.keywords:
+                extra_kwargs = {k: v for k, v in self.kwargs.items()
+                                     if k not in argspec.args}
+            # Run function
+            function(*args.values(), *extra_args, **extra_kwargs)
 
     def _parse_args(self):
         """
@@ -62,11 +81,13 @@ class Makefile:
         """
         parser = argparse.ArgumentParser()
         _, args = parser.parse_known_args()
-        self.args = args
+        self.args = [a for a in args if a != '']
 
     def _parse_functions(self, locals: dict):
         """
-        Find all functions defined in the user's Makefile which were
+        Find Makefile.py functions specified in the ezmake command
+
+        Finds all functions defined in the user's Makefile which were
         passed as an argument to the ezmake command.
 
         Parameters
@@ -85,10 +106,10 @@ class Makefile:
                     functions.append(functions_dict[self.args.pop(0)])
                 else:
                     if not functions:
-                        msg = f'ezmake command args: {self.args} did not' +    \
-                            'match any functions defined in Makefile.py: %s' % \
+                        msg = f'ezmake command args: {self.args} did not ' +  \
+                            'match any functions defined in Makefile.py: %s' %\
                             list(functions_dict.keys())
-                        raise ValueError(msg)
+                        raise TypeError(msg)
                     break
         self.functions = functions
 
@@ -100,18 +121,21 @@ class Makefile:
         """
         Separate kwargs from args in the ezmake command-line arguments
         """
-        kwarg_regex = r'^[\w_][\w\d_]*=.+$'
-        kwargs = [a.split('=') for a in self.args if re.findall(kwarg_regex, a)]
-        self.kwargs = {
-            k: (v if isinstance(v, str) else json.loads(v))
-            for k, v in kwargs
-        }
-        self.args = [a for a in self.args if not re.findall(kwarg_regex, a)]
+        re_kwargs = r'^[\w_][\w\d_]*=.+$'
+        kwargs = [a.split('=') for a in self.args if re.findall(re_kwargs, a)]
+        self.kwargs = {k: self._load_json(v) for k, v in kwargs}
+        self.args = [a for a in self.args if not re.findall(re_kwargs, a)]
 
     def _parse_flags(self):
         self.flags = {f: True for a in self.args if re.findall(r'^-\w+$', a)
                               for f in a[1:]}
         self.args = [a for a in self.args if not self.flags.get(a[1:])]
+
+    def _load_json(self, s: str):
+        try:
+            return json.loads(s)
+        except Exception:
+            return s
 
 
 def make(locals):

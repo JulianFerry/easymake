@@ -349,7 +349,7 @@ class Shell:
                 universal_newlines=True
             )
             if p.returncode != 0:
-                msg = '\nCommand `%s` failed with exit code %s' % \
+                msg = '\nCommand %s failed with exit code %s' % \
                     (command_list, p.returncode)
                 stderr_msg = ':\n\n%s' % p.stderr if p.stderr else ''
                 print(msg, stderr_msg)
@@ -357,6 +357,24 @@ class Shell:
             elif p.stdout:
                 output += p.stdout[:-1]
         return output
+
+    def ezmake(self, args, kwargs, cwd=None):
+        """
+        Call ezmake in another directory
+        """
+        if not cwd:
+            cwd = self.cwd if self.cwd else os.getcwd()
+        if isinstance(self.globals, Globals):
+            cwd = self.globals._replace_variables(cwd)
+        if os.path.abspath(cwd) == os.getcwd():
+            raise ValueError(f'Canmot call ezmake on self: cwd={cwd}')
+        # Parse args
+        def kwarg_join(k, v):  # noqa
+            return '='.join((str(k), "'" + _to_string(v) + "'"))
+        kwargs = [kwarg_join(k, v) for k, v in kwargs.items()]
+        kwargs = (' ' + ' '.join(kwargs)) if kwargs else ''
+        args = (' ' + ' '.join(args)) if args else ''
+        self.run(f'ezmake{args}{kwargs}', cwd=cwd)
 
 
 def _to_string(var):
