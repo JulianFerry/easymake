@@ -1,12 +1,13 @@
 [tool.poetry]
 name = "easymake"
-version = "0.1.1"
+version = "0.1.2"
 description = ""
 authors = ["Julian Ferry <julianferry94@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.7"
 demjson = "^2.2.4"
+tabulate = "^0.8.7"
 
 [tool.poetry.dev-dependencies]
 pytest = "^5.2"
